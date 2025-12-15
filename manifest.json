@@ -1,7 +1,7 @@
 {
   "id": "folder-viewer",
   "name": "폴더 보기",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "minAppVersion": "0.15.0",
   "description": "현재 포커스된 문서가 속한 폴더의 파일을 보여주는 플러그인입니다.",
   "author": "ujupatipanno",

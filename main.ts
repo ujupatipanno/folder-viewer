@@ -39,12 +39,14 @@ class FolderFilesView extends ItemView {
 
 		const activeFile = this.app.workspace.getActiveFile();
 
+		// 파일 목록 컨테이너
+		const fileListContainer = container.createEl('div', {
+			cls: 'folder-files-list'
+		});
+
 		if (!activeFile) {
-			// 활성 파일이 없을 때
-			container.createEl('div', {
-				text: '파일을 열어주세요',
-				cls: 'folder-files-empty'
-			});
+			// 활성 파일이 없을 때 - 빈 목록만 표시
+			this.currentFolderPath = null;
 			return;
 		}
 
@@ -63,19 +65,6 @@ class FolderFilesView extends ItemView {
 			b.stat.mtime - a.stat.mtime
 		);
 
-		// 파일 목록 컨테이너
-		const fileListContainer = container.createEl('div', {
-			cls: 'folder-files-list'
-		});
-
-		if (sortedFiles.length === 0) {
-			fileListContainer.createEl('div', {
-				text: '이 폴더에 파일이 없습니다',
-				cls: 'folder-files-empty'
-			});
-			return;
-		}
-
 		// 파일 목록 렌더링
 		sortedFiles.forEach(file => {
 			const fileItem = fileListContainer.createEl('div', {
@@ -87,7 +76,7 @@ class FolderFilesView extends ItemView {
 			});
 
 			// 현재 활성 파일이면 하이라이트
-			if (file.path === activeFile.path) {
+			if (activeFile && file.path === activeFile.path) {
 				fileTitle.addClass('is-active');
 			}
 
@@ -131,8 +120,6 @@ class FolderFilesView extends ItemView {
 
 // 메인 플러그인 클래스
 export default class FolderViewerPlugin extends Plugin {
-	private previousFolderPath: string | null = null;
-
 	async onload() {
 		// 뷰 등록
 		this.registerView(
@@ -171,8 +158,23 @@ export default class FolderViewerPlugin extends Plugin {
 		this.registerEvent(
 			this.app.workspace.on('file-open', (file) => {
 				if (file) {
-					// 뷰 업데이트
-					this.updateAllViews(file);
+					this.handleFileChange(file, false);
+				} else {
+					// 활성 파일이 없을 때 (빈 탭) - 모든 뷰를 빈 목록으로 업데이트
+					const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_FOLDER_FILES);
+					leaves.forEach(leaf => {
+						const view = leaf.view as FolderFilesView;
+						view.updateView();
+					});
+				}
+			})
+		);
+
+		// vault create 이벤트 - 파일 생성 시 뷰 업데이트
+		this.registerEvent(
+			this.app.vault.on('create', (file) => {
+				if (file instanceof TFile) {
+					this.handleFileChange(file, true);
 				}
 			})
 		);
@@ -181,11 +183,7 @@ export default class FolderViewerPlugin extends Plugin {
 		this.registerEvent(
 			this.app.vault.on('delete', (file) => {
 				if (file instanceof TFile) {
-					// 뷰 업데이트
-					const activeFile = this.app.workspace.getActiveFile();
-					if (activeFile) {
-						this.updateAllViews(activeFile);
-					}
+					this.handleFileChange(file, true);
 				}
 			})
 		);
@@ -194,11 +192,16 @@ export default class FolderViewerPlugin extends Plugin {
 		this.registerEvent(
 			this.app.vault.on('rename', (file, oldPath) => {
 				if (file instanceof TFile) {
-					// 뷰 업데이트
-					const activeFile = this.app.workspace.getActiveFile();
-					if (activeFile) {
-						this.updateAllViews(activeFile);
-					}
+					this.handleFileChange(file, true);
+				}
+			})
+		);
+
+		// vault modify 이벤트 - 파일 수정 시 정렬 순서 업데이트
+		this.registerEvent(
+			this.app.vault.on('modify', (file) => {
+				if (file instanceof TFile) {
+					this.handleFileChange(file, true);
 				}
 			})
 		);
@@ -253,13 +256,30 @@ export default class FolderViewerPlugin extends Plugin {
 		});
 	}
 
-	// 모든 뷰 업데이트
-	updateAllViews(file: TFile) {
-		const folderPath = file.parent?.path || '';
+	// 파일 변경 공통 핸들러
+	handleFileChange(changedFile: TFile, forceUpdate: boolean) {
+		const changedFolderPath = changedFile.parent?.path || '';
+		const activeFile = this.app.workspace.getActiveFile();
+		
+		if (!activeFile && !forceUpdate) {
+			// 활성 파일이 없고 강제 업데이트가 아니면 무시
+			return;
+		}
 
-		// 폴더가 바뀌었는지 확인
-		const folderChanged = this.previousFolderPath !== folderPath;
-		this.previousFolderPath = folderPath;
+		const currentFolderPath = activeFile?.parent?.path || '';
+
+		// 변경된 파일이 현재 폴더와 다른 폴더에 있으면 무시
+		if (forceUpdate && changedFolderPath !== currentFolderPath) {
+			return;
+		}
+
+		// 모든 뷰 업데이트
+		this.updateAllViews(activeFile || changedFile, forceUpdate);
+	}
+
+	// 모든 뷰 업데이트
+	updateAllViews(file: TFile, forceUpdate: boolean = false) {
+		const folderPath = file.parent?.path || '';
 
 		// 모든 뷰 찾기
 		const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_FOLDER_FILES);
@@ -267,8 +287,8 @@ export default class FolderViewerPlugin extends Plugin {
 		leaves.forEach(leaf => {
 			const view = leaf.view as FolderFilesView;
 			
-			if (folderChanged) {
-				// 폴더가 바뀌면 전체 뷰 리렌더링
+			// 강제 업데이트이거나 폴더가 바뀌었으면 전체 리렌더링
+			if (forceUpdate || view.currentFolderPath !== folderPath) {
 				view.updateView();
 			} else {
 				// 같은 폴더 내에서 파일만 바뀌면 하이라이트만 업데이트
