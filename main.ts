@@ -1,4 +1,4 @@
-import { App, ItemView, Plugin, TFile, WorkspaceLeaf } from 'obsidian';
+import { ItemView, Notice, Plugin, TFile, WorkspaceLeaf, setIcon } from 'obsidian';
 
 // 뷰 타입 식별자
 const VIEW_TYPE_FOLDER_FILES = 'folder-files-view';
@@ -6,6 +6,90 @@ const VIEW_TYPE_FOLDER_FILES = 'folder-files-view';
 // 폴더 파일 목록 뷰 클래스
 class FolderFilesView extends ItemView {
 	currentFolderPath: string | null = null;
+	previousFolderPath: string | null = null;
+
+	private getContentContainer(): HTMLElement {
+		return this.containerEl.children[1] as HTMLElement;
+	}
+
+	private renderEmptyList(): void {
+		const container = this.getContentContainer();
+		container.empty();
+		container.createEl('div', {
+			cls: 'folder-files-list'
+		});
+	}
+
+	private renderFileItems(fileListContainer: HTMLElement, files: TFile[], activeFile: TFile | null): void {
+		files.forEach(file => {
+			const fileItem = fileListContainer.createEl('div', {
+				cls: 'tree-item nav-file'
+			});
+
+			const fileTitle = fileItem.createEl('div', {
+				cls: 'tree-item-self is-clickable nav-file-title'
+			});
+			fileTitle.dataset.filePath = file.path;
+
+			// 현재 활성 파일이면 하이라이트
+			if (activeFile && file.path === activeFile.path) {
+				fileTitle.addClass('is-active');
+			}
+
+			// 파일 이름 표시
+			fileTitle.createEl('div', {
+				text: file.basename,
+				cls: 'tree-item-inner nav-file-title-content'
+			});
+
+			// 삭제 버튼
+			const deleteButton = fileTitle.createEl('div', {
+				cls: 'folder-files-delete-btn tree-item-icon'
+			});
+			setIcon(deleteButton, 'lucide-x');
+
+			// 파일 클릭 이벤트 - 해당 파일 열기
+			fileTitle.addEventListener('click', async () => {
+				await this.app.workspace.getLeaf().openFile(file);
+			});
+
+			// 삭제 버튼 클릭 이벤트
+			deleteButton.addEventListener('click', async (event) => {
+				event.stopPropagation();
+				
+				try {
+					await this.app.fileManager.trashFile(file);
+				} catch (error) {
+					new Notice(`파일 삭제 실패: ${error.message}`);
+					console.error('File deletion error:', error);
+				}
+			});
+		});
+	}
+
+	private renderFolder(folderPath: string, activeFile: TFile | null): void {
+		const container = this.getContentContainer();
+		container.empty();
+
+		const fileListContainer = container.createEl('div', {
+			cls: 'folder-files-list'
+		});
+
+		const filesInFolder = this.app.vault.getFiles().filter(file => {
+			const fileFolderPath = file.parent?.path || '';
+			return fileFolderPath === folderPath;
+		});
+
+		const sortedFiles = filesInFolder.sort((a, b) => b.stat.mtime - a.stat.mtime);
+		this.renderFileItems(fileListContainer, sortedFiles, activeFile);
+	}
+
+	// 삭제 이벤트용: 현재 표시 중인 폴더 기준으로 강제 리렌더링
+	renderForFolder(folderPath: string): void {
+		this.currentFolderPath = folderPath;
+		const activeFile = this.app.workspace.getActiveFile();
+		this.renderFolder(folderPath, activeFile);
+	}
 
 	constructor(leaf: WorkspaceLeaf) {
 		super(leaf);
@@ -34,63 +118,26 @@ class FolderFilesView extends ItemView {
 
 	// 뷰 업데이트 - 현재 활성 파일의 폴더 기준으로 파일 목록 표시
 	updateView() {
-		const container = this.containerEl.children[1];
-		container.empty();
-
 		const activeFile = this.app.workspace.getActiveFile();
-
-		// 파일 목록 컨테이너
-		const fileListContainer = container.createEl('div', {
-			cls: 'folder-files-list'
-		});
 
 		if (!activeFile) {
 			// 활성 파일이 없을 때 - 빈 목록만 표시
 			this.currentFolderPath = null;
+			this.renderEmptyList();
 			return;
 		}
 
 		// 현재 파일의 폴더 경로 파악
 		const folderPath = activeFile.parent?.path || '';
+		
+		// 폴더가 변경되었을 때 이전 폴더 저장
+		if (this.currentFolderPath !== null && this.currentFolderPath !== folderPath) {
+			this.previousFolderPath = this.currentFolderPath;
+		}
+		
 		this.currentFolderPath = folderPath;
 
-		// 같은 폴더의 파일들 필터링
-		const filesInFolder = this.app.vault.getFiles().filter(file => {
-			const fileFolderPath = file.parent?.path || '';
-			return fileFolderPath === folderPath;
-		});
-
-		// 수정 시간 순서로 정렬 (최근 수정된 파일이 위로)
-		const sortedFiles = filesInFolder.sort((a, b) => 
-			b.stat.mtime - a.stat.mtime
-		);
-
-		// 파일 목록 렌더링
-		sortedFiles.forEach(file => {
-			const fileItem = fileListContainer.createEl('div', {
-				cls: 'tree-item nav-file'
-			});
-
-			const fileTitle = fileItem.createEl('div', {
-				cls: 'tree-item-self is-clickable nav-file-title'
-			});
-
-			// 현재 활성 파일이면 하이라이트
-			if (activeFile && file.path === activeFile.path) {
-				fileTitle.addClass('is-active');
-			}
-
-			// 파일 이름 표시
-			fileTitle.createEl('div', {
-				text: file.basename,
-				cls: 'tree-item-inner nav-file-title-content'
-			});
-
-			// 파일 클릭 이벤트 - 해당 파일 열기
-			fileTitle.addEventListener('click', async () => {
-				await this.app.workspace.getLeaf().openFile(file);
-			});
-		});
+		this.renderFolder(folderPath, activeFile);
 	}
 
 	// 같은 폴더 내에서 파일만 바뀐 경우 하이라이트만 업데이트
@@ -98,20 +145,16 @@ class FolderFilesView extends ItemView {
 		const activeFile = this.app.workspace.getActiveFile();
 		if (!activeFile) return;
 
-		const container = this.containerEl.children[1];
+		const container = this.getContentContainer();
 		const fileItems = container.querySelectorAll('.nav-file-title');
 
 		fileItems.forEach(item => {
-			const titleContent = item.querySelector('.nav-file-title-content');
-			if (!titleContent) return;
-
-			const fileName = titleContent.textContent;
-			
 			// 이전 하이라이트 제거
 			item.removeClass('is-active');
 			
 			// 현재 활성 파일이면 하이라이트 추가
-			if (fileName === activeFile.basename) {
+			const filePath = (item as HTMLElement).dataset.filePath;
+			if (filePath && filePath === activeFile.path) {
 				item.addClass('is-active');
 			}
 		});
@@ -154,6 +197,16 @@ export default class FolderViewerPlugin extends Plugin {
 			}
 		});
 
+		// 이전 폴더로 이동 명령어
+		this.addCommand({
+			id: 'go-to-previous-folder',
+			name: '이전 폴더로 이동',
+			icon: 'lucide-arrow-left',
+			callback: () => {
+				this.goToPreviousFolder();
+			}
+		});
+
 		// file-open 이벤트 리스너 - 파일이 열릴 때마다 뷰 업데이트
 		this.registerEvent(
 			this.app.workspace.on('file-open', (file) => {
@@ -183,7 +236,19 @@ export default class FolderViewerPlugin extends Plugin {
 		this.registerEvent(
 			this.app.vault.on('delete', (file) => {
 				if (file instanceof TFile) {
-					this.handleFileChange(file, true);
+					// 모든 뷰를 찾아서 각 뷰의 currentFolderPath 기준으로 업데이트
+					const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_FOLDER_FILES);
+					
+					leaves.forEach(leaf => {
+						const view = leaf.view as FolderFilesView;
+						
+						// 뷰가 표시 중인 폴더가 있으면 그 폴더 기준으로 재렌더링
+						if (view.currentFolderPath !== null) {
+							view.renderForFolder(view.currentFolderPath);
+						} else {
+							view.updateView();
+						}
+					});
 				}
 			})
 		);
@@ -256,25 +321,62 @@ export default class FolderViewerPlugin extends Plugin {
 		});
 	}
 
+	// 이전 폴더로 이동
+	async goToPreviousFolder() {
+		const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_FOLDER_FILES);
+		
+		if (leaves.length === 0) {
+			new Notice('폴더 파일 목록 뷰가 열려있지 않습니다.');
+			return;
+		}
+		
+		const view = leaves[0].view as FolderFilesView;
+		
+		if (!view.previousFolderPath) {
+			new Notice('이전 폴더가 없습니다.');
+			return;
+		}
+		
+		// 이전 폴더의 파일 목록 가져오기
+		const filesInPreviousFolder = this.app.vault.getFiles().filter(file => {
+			const fileFolderPath = file.parent?.path || '';
+			return fileFolderPath === view.previousFolderPath;
+		});
+		
+		if (filesInPreviousFolder.length === 0) {
+			new Notice('이전 폴더에 파일이 없습니다.');
+			return;
+		}
+		
+		// 가장 최근 수정된 파일 선택
+		const sortedFiles = filesInPreviousFolder.sort((a, b) => 
+			b.stat.mtime - a.stat.mtime
+		);
+		
+		// 파일 열기
+		await this.app.workspace.getLeaf().openFile(sortedFiles[0]);
+	}
+
 	// 파일 변경 공통 핸들러
 	handleFileChange(changedFile: TFile, forceUpdate: boolean) {
-		const changedFolderPath = changedFile.parent?.path || '';
 		const activeFile = this.app.workspace.getActiveFile();
-		
-		if (!activeFile && !forceUpdate) {
-			// 활성 파일이 없고 강제 업데이트가 아니면 무시
+		if (!activeFile) {
+			// 활성 파일이 없으면 뷰는 빈 목록 상태이므로, 강제 업데이트일 때만 갱신
+			if (forceUpdate) {
+				this.updateAllViews(changedFile, true);
+			}
 			return;
 		}
 
-		const currentFolderPath = activeFile?.parent?.path || '';
+		const activeFolderPath = activeFile.parent?.path || '';
+		const changedFolderPath = changedFile.parent?.path || '';
 
-		// 변경된 파일이 현재 폴더와 다른 폴더에 있으면 무시
-		if (forceUpdate && changedFolderPath !== currentFolderPath) {
+		// 강제 업데이트(생성/이름변경/수정)는 '현재 활성 폴더'에서 일어난 변경만 반영
+		if (forceUpdate && changedFolderPath !== activeFolderPath) {
 			return;
 		}
 
-		// 모든 뷰 업데이트
-		this.updateAllViews(activeFile || changedFile, forceUpdate);
+		this.updateAllViews(activeFile, forceUpdate);
 	}
 
 	// 모든 뷰 업데이트
@@ -296,4 +398,5 @@ export default class FolderViewerPlugin extends Plugin {
 			}
 		});
 	}
+
 }
